@@ -1,6 +1,11 @@
 #!/bin/sh
 set -e
 
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-fi
+case "${1:-}" in
+  remove|purge)
+    rm -f /usr/local/lib/systemd/system/proxmox-notify-agent.service
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload || true
+    fi
+    ;;
+esac

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+case "${1:-}" in
+  remove|deconfigure)
+    if [ -x /usr/local/bin/proxmox-notify ]; then
+      /usr/local/bin/proxmox-notify uninstall
+    fi
+    ;;
+esac

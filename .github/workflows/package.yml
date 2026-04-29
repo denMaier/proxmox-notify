@@ -1,4 +1,4 @@
-name: Package
+name: Release
 
 on:
   push:
@@ -17,8 +17,8 @@ defaults:
     shell: bash
 
 jobs:
-  debian-package:
-    name: Build Debian package
+  linux-binary:
+    name: Build Linux binary
     runs-on: ubuntu-latest
     container:
       image: rust:1-bookworm
@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends make python3 dpkg-dev
+          apt-get install -y --no-install-recommends make python3
 
       - name: Configure Rust path
         run: echo /usr/local/cargo/bin >>"${GITHUB_PATH}"
@@ -42,7 +42,7 @@ jobs:
       - name: Run checks
         run: make ci
 
-      - name: Set package version
+      - name: Set artifact version
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
@@ -50,30 +50,28 @@ jobs:
           else
             version="0.1.0+${GITHUB_SHA::7}"
           fi
-          arch="$(dpkg --print-architecture)"
+          arch="$(uname -m)"
           echo "VERSION=${version}" >>"${GITHUB_ENV}"
-          echo "PACKAGE_PATH=build/proxmox-notify_${version}_${arch}.deb" >>"${GITHUB_ENV}"
+          echo "PACKAGE_ARCH=${arch}" >>"${GITHUB_ENV}"
+          echo "PACKAGE_OS=linux" >>"${GITHUB_ENV}"
+          echo "PACKAGE_PATH=build/proxmox-notify_${version}_${arch}-linux" >>"${GITHUB_ENV}"
 
-      - name: Build package
+      - name: Build binary artifact
         run: make package
 
-      - name: Inspect package
+      - name: Test binary artifact
         run: |
           set -euo pipefail
-          test -f "${PACKAGE_PATH}"
-          dpkg-deb --info "${PACKAGE_PATH}"
-          dpkg-deb --contents "${PACKAGE_PATH}"
+          test -x "${PACKAGE_PATH}"
+          "${PACKAGE_PATH}" --help >/dev/null
+          root="$(mktemp -d)"
+          "${PACKAGE_PATH}" install --destdir "${root}" --no-systemctl
+          PROXMOX_NOTIFY_BIN="${root}/usr/local/bin/proxmox-notify" tests/installed-e2e.sh
 
-      - name: Test installed package
-        run: |
-          set -euo pipefail
-          dpkg --ignore-depends=systemd -i "${PACKAGE_PATH}"
-          PROXMOX_NOTIFY_BIN=/usr/local/bin/proxmox-notify tests/installed-e2e.sh
-
-      - name: Upload package artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: proxmox-notify-deb
+          name: proxmox-notify-linux-binary
           path: ${{ env.PACKAGE_PATH }}
           if-no-files-found: error
 
@@ -81,16 +79,16 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs:
-      - debian-package
+      - linux-binary
     if: github.ref_type == 'tag'
     permissions:
       contents: write
 
     steps:
-      - name: Download package artifact
+      - name: Download binary artifact
         uses: actions/download-artifact@v4
         with:
-          name: proxmox-notify-deb
+          name: proxmox-notify-linux-binary
           path: dist
 
       - name: Publish release asset
@@ -99,18 +97,18 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          mapfile -t packages < <(find dist -type f -name '*.deb' -print | sort)
-          if [[ "${#packages[@]}" -ne 1 ]]; then
-            printf 'expected exactly one .deb artifact, found %s\n' "${#packages[@]}" >&2
+          mapfile -t assets < <(find dist -type f -name 'proxmox-notify_*' -print | sort)
+          if [[ "${#assets[@]}" -ne 1 ]]; then
+            printf 'expected exactly one binary artifact, found %s\n' "${#assets[@]}" >&2
             exit 1
           fi
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${packages[0]}" --clobber
+            gh release upload "${TAG}" "${assets[0]}" --clobber
           else
-            gh release create "${TAG}" "${packages[0]}" \
+            gh release create "${TAG}" "${assets[0]}" \
               --title "${TAG}" \
-              --notes "Debian package for proxmox-notify ${TAG}."
+              --notes "Linux binary for proxmox-notify ${TAG}. Make the downloaded asset executable, then run it as root with: ./<asset> install --enable-now"
           fi
 
   nix:

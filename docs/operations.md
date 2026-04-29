@@ -2,23 +2,44 @@
 
 ## Install
 
-Build a Debian package:
+Preferred install path: place one release binary on the node, then let the
+binary install itself and the long-running agent unit.
+
+To build that binary locally, run `make package`; it prints the artifact path
+under `build/`.
 
 ```sh
-make package
+install -m 0755 proxmox-notify /usr/local/bin/proxmox-notify
+/usr/local/bin/proxmox-notify install --enable-now
 ```
 
-Install the generated `.deb` on every Proxmox node:
+When installing from a freshly built or downloaded binary, running it directly is
+enough; `install` copies the current executable into `/usr/local/bin`:
 
 ```sh
-dpkg -i build/proxmox-notify_0.1.0_$(dpkg --print-architecture).deb
+sudo ./proxmox-notify install --enable-now
 ```
 
-The package installs:
+The install command manages:
 
 - `/usr/local/bin/proxmox-notify`
 - `/usr/local/lib/systemd/system/proxmox-notify-agent.service`
 - `/etc/proxmox-notify/config.toml`
+
+It preserves an existing config file. Omit `--enable-now` if the unit should be
+installed but not started.
+
+To remove only the managed systemd unit and stop the service:
+
+```sh
+sudo /usr/local/bin/proxmox-notify uninstall
+```
+
+Add `--remove-binary --purge-config` when intentionally deleting the binary and
+local config as well.
+
+A Debian package can still be built with `make deb`, but direct binary install
+is the canonical Proxmox deployment path.
 
 ## Configure
 
@@ -34,7 +55,8 @@ subscribes = ["cluster-folder-git"]
 cluster-folder-git = "/usr/local/bin/cluster-folder-git-handler"
 ```
 
-Then enable the agent:
+If the install command was run without `--enable-now`, enable the agent after
+configuration:
 
 ```sh
 systemctl enable --now proxmox-notify-agent.service
@@ -75,7 +97,7 @@ List commands print JSON. Stored files remain TOML.
 
 Before relying on it, test on a real three-node Proxmox cluster:
 
-1. Install the package on all nodes.
+1. Install the binary on all nodes.
 2. Confirm every node writes an `announcements.toml`.
 3. Publish from node A and verify B/C observe the manifest.
 4. Stop an agent, publish, restart it, and confirm reconcile catches up.

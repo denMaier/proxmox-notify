@@ -18,7 +18,7 @@ The model is intentionally narrow:
 - [DOCS.md](DOCS.md): documentation index
 - [Architecture](docs/architecture.md): storage model, write behavior, and locks
 - [Operations](docs/operations.md): install, configure, publish, and validate
-- [Development](docs/development.md): tests, Nix, packaging, and CI
+- [Development](docs/development.md): tests, Nix, release binaries, and CI
 
 ## Files
 
@@ -54,23 +54,41 @@ proxmox-notify list-nodes
 proxmox-notify delete --namespace cluster-folder-git
 proxmox-notify reconcile --namespace cluster-folder-git
 proxmox-notify agent
+proxmox-notify install
+proxmox-notify uninstall
 ```
 
 `list-manifests` and `list-nodes` print JSON. Manifest and announcement files
 stored in pmxcfs are TOML.
 
-## Packaging
+## Install
 
-Build a simple Debian package:
+Build a release binary:
 
 ```sh
 make package
 ```
 
-Install directly into a staging root:
+Install onto a host and insert the long-running agent unit:
 
 ```sh
-make install DESTDIR=/tmp/proxmox-notify-root
+artifact="$(make package | tail -n 1)"
+sudo "$artifact" install --enable-now
+```
+
+The install command copies the running binary to `/usr/local/bin/proxmox-notify`,
+creates `/etc/proxmox-notify/config.toml` if missing, writes the systemd unit,
+and reloads systemd. For deployment automation that already placed the binary:
+
+```sh
+install -m 0755 proxmox-notify /usr/local/bin/proxmox-notify
+/usr/local/bin/proxmox-notify install --enable-now
+```
+
+Build an optional Debian package:
+
+```sh
+make deb
 ```
 
 Use Nix:
@@ -88,8 +106,8 @@ Local smoke test:
 make test
 ```
 
-Installed-package e2e test, intended for a disposable Debian/Proxmox-like VM
-after installing the package:
+Installed-binary e2e test, intended for a disposable Debian/Proxmox-like VM
+after installing the binary:
 
 ```sh
 tests/installed-e2e.sh

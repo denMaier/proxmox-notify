@@ -11,7 +11,7 @@ deb_path="${build_dir}/proxmox-notify_${version}_${arch}.deb"
 rm -rf -- "$pkg_root"
 mkdir -p -- "$pkg_root/DEBIAN" "$build_dir"
 
-make -C "$repo_root" install DESTDIR="$pkg_root"
+make -C "$repo_root" install DESTDIR="$pkg_root" INSTALL_SYSTEMD_UNIT=0
 
 cat >"$pkg_root/DEBIAN/control" <<CONTROL
 Package: proxmox-notify
@@ -30,6 +30,7 @@ cat >"$pkg_root/DEBIAN/conffiles" <<'CONFFILES'
 CONFFILES
 
 install -m755 "$repo_root/packaging/postinst" "$pkg_root/DEBIAN/postinst"
+install -m755 "$repo_root/packaging/prerm" "$pkg_root/DEBIAN/prerm"
 install -m755 "$repo_root/packaging/postrm" "$pkg_root/DEBIAN/postrm"
 
 dpkg-deb --build "$pkg_root" "$deb_path"

@@ -70,6 +70,26 @@ grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
 "$bin" agent --once
 grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
 
+install_root="${tmp_dir}/install-root"
+"$bin" install --destdir "$install_root" --prefix /usr/local --sysconfdir /etc --no-systemctl
+test -x "${install_root}/usr/local/bin/proxmox-notify"
+test -f "${install_root}/etc/proxmox-notify/config.toml"
+test -f "${install_root}/usr/local/lib/systemd/system/proxmox-notify-agent.service"
+grep -qx 'ExecStart=/usr/local/bin/proxmox-notify agent' "${install_root}/usr/local/lib/systemd/system/proxmox-notify-agent.service"
+
+printf '# keep me\n' >"${install_root}/etc/proxmox-notify/config.toml"
+"$bin" install --destdir "$install_root" --prefix /usr/local --sysconfdir /etc --no-systemctl --no-binary --no-systemd-unit
+grep -qx '# keep me' "${install_root}/etc/proxmox-notify/config.toml"
+
+"$bin" uninstall --destdir "$install_root" --prefix /usr/local --sysconfdir /etc --no-systemctl
+test ! -e "${install_root}/usr/local/lib/systemd/system/proxmox-notify-agent.service"
+test -x "${install_root}/usr/local/bin/proxmox-notify"
+test -f "${install_root}/etc/proxmox-notify/config.toml"
+
+"$bin" uninstall --destdir "$install_root" --prefix /usr/local --sysconfdir /etc --no-systemctl --remove-binary --purge-config
+test ! -e "${install_root}/usr/local/bin/proxmox-notify"
+test ! -e "${install_root}/etc/proxmox-notify/config.toml"
+
 if "$bin" publish --namespace ../bad --payload-file "$payload" 2>/dev/null; then
   printf 'invalid namespace was accepted\n' >&2
   exit 1

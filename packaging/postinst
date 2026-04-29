@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-fi
+case "${1:-}" in
+  configure)
+    if [ -x /usr/local/bin/proxmox-notify ]; then
+      /usr/local/bin/proxmox-notify install --no-binary --no-config
+    elif command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload || true
+    fi
+    ;;
+esac

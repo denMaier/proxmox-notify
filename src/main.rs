@@ -16,8 +16,13 @@ use toml::Value;
 
 const DEFAULT_CLUSTER_ROOT: &str = "/etc/pve/proxmox-notify";
 const DEFAULT_CONFIG: &str = "/etc/proxmox-notify/config.toml";
+const DEFAULT_PREFIX: &str = "/usr/local";
 const DEFAULT_RUN_DIR: &str = "/run/proxmox-notify";
+const DEFAULT_SYSCONFDIR: &str = "/etc";
 const DEFAULT_RECONCILE_INTERVAL: &str = "60s";
+const SERVICE_NAME: &str = "proxmox-notify-agent.service";
+const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../config/config.toml");
+const SYSTEMD_UNIT_TEMPLATE: &str = include_str!("../systemd/proxmox-notify-agent.service");
 
 #[derive(Debug, Parser)]
 #[command(name = "proxmox-notify")]
@@ -37,6 +42,8 @@ enum Commands {
     Delete(NamespaceArgs),
     Reconcile(NamespaceArgs),
     Agent(AgentArgs),
+    Install(InstallArgs),
+    Uninstall(UninstallArgs),
 }
 
 #[derive(Debug, Args)]
@@ -67,6 +74,46 @@ struct AgentArgs {
     once: bool,
     #[arg(long)]
     poll_interval: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct InstallArgs {
+    #[arg(long, default_value = DEFAULT_PREFIX)]
+    prefix: PathBuf,
+    #[arg(long, default_value = DEFAULT_SYSCONFDIR)]
+    sysconfdir: PathBuf,
+    #[arg(long)]
+    systemd_dir: Option<PathBuf>,
+    #[arg(long)]
+    destdir: Option<PathBuf>,
+    #[arg(long)]
+    no_binary: bool,
+    #[arg(long)]
+    no_config: bool,
+    #[arg(long)]
+    no_systemd_unit: bool,
+    #[arg(long)]
+    no_systemctl: bool,
+    #[arg(long)]
+    enable_now: bool,
+}
+
+#[derive(Debug, Args)]
+struct UninstallArgs {
+    #[arg(long, default_value = DEFAULT_PREFIX)]
+    prefix: PathBuf,
+    #[arg(long, default_value = DEFAULT_SYSCONFDIR)]
+    sysconfdir: PathBuf,
+    #[arg(long)]
+    systemd_dir: Option<PathBuf>,
+    #[arg(long)]
+    destdir: Option<PathBuf>,
+    #[arg(long)]
+    no_systemctl: bool,
+    #[arg(long)]
+    remove_binary: bool,
+    #[arg(long)]
+    purge_config: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -136,6 +183,8 @@ fn run() -> Result<()> {
         Commands::Delete(args) => delete_manifest(&paths, &args.namespace),
         Commands::Reconcile(args) => reconcile(&paths, &args.namespace),
         Commands::Agent(args) => agent(&paths, &args),
+        Commands::Install(args) => install_system(&args),
+        Commands::Uninstall(args) => uninstall_system(&args),
     }
 }
 
@@ -143,6 +192,249 @@ fn env_path(name: &str, default: &str) -> PathBuf {
     std::env::var_os(name)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(default))
+}
+
+struct InstallLayout {
+    host_binary: PathBuf,
+    binary: PathBuf,
+    config: PathBuf,
+    unit: PathBuf,
+}
+
+impl InstallLayout {
+    fn new(
+        prefix: &Path,
+        sysconfdir: &Path,
+        systemd_dir: Option<&Path>,
+        destdir: Option<&Path>,
+    ) -> Result<Self> {
+        require_absolute_path("prefix", prefix)?;
+        require_absolute_path("sysconfdir", sysconfdir)?;
+
+        let host_systemd_dir = match systemd_dir {
+            Some(path) => {
+                require_absolute_path("systemd-dir", path)?;
+                path.to_path_buf()
+            }
+            None => prefix.join("lib/systemd/system"),
+        };
+
+        let host_binary = prefix.join("bin/proxmox-notify");
+        let host_config = sysconfdir.join("proxmox-notify/config.toml");
+        let host_unit = host_systemd_dir.join(SERVICE_NAME);
+
+        Ok(Self {
+            binary: rooted_path(destdir, &host_binary),
+            config: rooted_path(destdir, &host_config),
+            unit: rooted_path(destdir, &host_unit),
+            host_binary,
+        })
+    }
+}
+
+fn require_absolute_path(name: &str, path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        bail!("{name} must be an absolute path: {}", path.display());
+    }
+    Ok(())
+}
+
+fn rooted_path(destdir: Option<&Path>, path: &Path) -> PathBuf {
+    let Some(destdir) = destdir.filter(|path| !path.as_os_str().is_empty()) else {
+        return path.to_path_buf();
+    };
+
+    match path.strip_prefix("/") {
+        Ok(relative) => destdir.join(relative),
+        Err(_) => destdir.join(path),
+    }
+}
+
+fn install_system(args: &InstallArgs) -> Result<()> {
+    let layout = InstallLayout::new(
+        &args.prefix,
+        &args.sysconfdir,
+        args.systemd_dir.as_deref(),
+        args.destdir.as_deref(),
+    )?;
+
+    if !args.no_binary {
+        if install_current_exe(&layout.binary)? {
+            println!("installed {}", layout.binary.display());
+        } else {
+            println!("kept existing {}", layout.binary.display());
+        }
+    }
+
+    if !args.no_config {
+        if write_text_if_missing(&layout.config, DEFAULT_CONFIG_TEMPLATE, 0o644)? {
+            println!("installed {}", layout.config.display());
+        } else {
+            println!("kept existing {}", layout.config.display());
+        }
+    }
+
+    if !args.no_systemd_unit {
+        let unit = render_systemd_unit(&layout.host_binary)?;
+        write_text_with_mode(&layout.unit, &unit, 0o644)?;
+        println!("installed {}", layout.unit.display());
+    }
+
+    if should_run_systemctl(args.destdir.as_deref(), args.no_systemctl) {
+        systemctl_best_effort(&["daemon-reload"]);
+        if args.enable_now {
+            systemctl_required(&["enable", "--now", SERVICE_NAME])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn uninstall_system(args: &UninstallArgs) -> Result<()> {
+    let layout = InstallLayout::new(
+        &args.prefix,
+        &args.sysconfdir,
+        args.systemd_dir.as_deref(),
+        args.destdir.as_deref(),
+    )?;
+
+    if should_run_systemctl(args.destdir.as_deref(), args.no_systemctl) {
+        systemctl_best_effort(&["disable", "--now", SERVICE_NAME]);
+    }
+
+    if remove_file_if_exists(&layout.unit)? {
+        println!("removed {}", layout.unit.display());
+    }
+
+    if args.remove_binary && remove_file_if_exists(&layout.binary)? {
+        println!("removed {}", layout.binary.display());
+    }
+
+    if args.purge_config && remove_file_if_exists(&layout.config)? {
+        println!("removed {}", layout.config.display());
+    }
+
+    if should_run_systemctl(args.destdir.as_deref(), args.no_systemctl) {
+        systemctl_best_effort(&["daemon-reload"]);
+    }
+
+    Ok(())
+}
+
+fn render_systemd_unit(binary: &Path) -> Result<String> {
+    let needle = "ExecStart=/usr/local/bin/proxmox-notify agent";
+    let replacement = format!("ExecStart={} agent", binary.display());
+    if !SYSTEMD_UNIT_TEMPLATE.contains(needle) {
+        bail!("systemd unit template is missing the expected ExecStart line");
+    }
+    Ok(SYSTEMD_UNIT_TEMPLATE.replace(needle, &replacement))
+}
+
+fn install_current_exe(path: &Path) -> Result<bool> {
+    let source = std::env::current_exe().context("cannot locate current executable")?;
+    if same_file(&source, path) {
+        return Ok(false);
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+    fs::copy(&source, path)
+        .with_context(|| format!("cannot copy {} to {}", source.display(), path.display()))?;
+    set_file_mode(path, 0o755)?;
+    Ok(true)
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn write_text_if_missing(path: &Path, text: &str, mode: u32) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    write_text_with_mode(path, text, mode)?;
+    Ok(true)
+}
+
+fn write_text_with_mode(path: &Path, text: &str, mode: u32) -> Result<()> {
+    write_text_atomic(path, text)?;
+    set_file_mode(path, mode)
+}
+
+fn set_file_mode(path: &Path, mode: u32) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .with_context(|| format!("cannot set mode on {}", path.display()))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("cannot remove {}", path.display())),
+    }
+}
+
+fn should_run_systemctl(destdir: Option<&Path>, no_systemctl: bool) -> bool {
+    !no_systemctl
+        && match destdir {
+            Some(path) => path.as_os_str().is_empty(),
+            None => true,
+        }
+}
+
+fn command_in_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+fn systemctl_best_effort(args: &[&str]) {
+    if !command_in_path("systemctl") {
+        return;
+    }
+
+    match ProcessCommand::new("systemctl").args(args).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "proxmox-notify: warning: systemctl {} exited with {status}",
+            args.join(" ")
+        ),
+        Err(err) => eprintln!(
+            "proxmox-notify: warning: cannot run systemctl {}: {err}",
+            args.join(" ")
+        ),
+    }
+}
+
+fn systemctl_required(args: &[&str]) -> Result<()> {
+    if !command_in_path("systemctl") {
+        bail!("systemctl is required for systemctl {}", args.join(" "));
+    }
+
+    let status = ProcessCommand::new("systemctl")
+        .args(args)
+        .status()
+        .with_context(|| format!("cannot run systemctl {}", args.join(" ")))?;
+    if !status.success() {
+        bail!("systemctl {} exited with {status}", args.join(" "));
+    }
+    Ok(())
 }
 
 fn node_name() -> Result<String> {

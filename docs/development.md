@@ -19,14 +19,17 @@ It does not touch `/etc/pve`.
 
 ## Installed E2E
 
-After installing the package into a disposable Debian or Proxmox-like machine:
+After installing the binary into a disposable Debian or Proxmox-like machine:
 
 ```sh
 tests/installed-e2e.sh
 ```
 
-This test still redirects cluster paths into `/tmp`; it verifies the installed
-`/usr/local/bin/proxmox-notify` binary.
+This test redirects cluster paths into `/tmp`; it verifies the installed
+`/usr/local/bin/proxmox-notify` binary without touching `/etc/pve`.
+
+The smoke test also exercises `proxmox-notify install` and `uninstall` against a
+temporary `--destdir`, including systemd unit rendering and config preservation.
 
 ## Nix
 
@@ -50,10 +53,15 @@ nix flake check
 
 ## Release Flow
 
-CI builds a `.deb` inside a Debian Bookworm container on every push, pull
-request, and `v*` tag. It installs that package and runs the installed
-end-to-end test before uploading the artifact. CI also checks the Nix flake and
-builds the Nix package.
+CI builds a Linux release binary inside a Debian Bookworm container on every
+push, pull request, and `v*` tag. It installs that binary into a temporary root
+with `proxmox-notify install --destdir ...`, runs the installed end-to-end test,
+and uploads the binary artifact. CI also checks the Nix flake and builds the Nix
+package.
+
+The optional Debian package remains available through `make deb`. It stages the
+binary and config, then uses maintainer scripts to call the CLI-managed install
+and uninstall paths for the agent unit.
 
 For a release, tag the commit:
 
@@ -62,5 +70,5 @@ git tag v0.1.0
 git push origin main v0.1.0
 ```
 
-The tag build uses the tag name as the Debian package version and publishes the
-package to the matching GitHub Release with `gh`.
+The tag build uses the tag name as the binary artifact version and publishes the
+binary to the matching GitHub Release with `gh`.
