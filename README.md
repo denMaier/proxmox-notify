@@ -54,8 +54,6 @@ proxmox-notify list-nodes
 proxmox-notify delete --namespace cluster-folder-git
 proxmox-notify reconcile --namespace cluster-folder-git
 proxmox-notify agent
-proxmox-notify subscribe --namespace cluster-folder-git --handler /usr/local/bin/handler
-proxmox-notify prune-nodes --older-than 30d
 ```
 
 `list-manifests` and `list-nodes` print JSON. Manifest and announcement files

@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,6 @@ enum Commands {
     Delete(NamespaceArgs),
     Reconcile(NamespaceArgs),
     Agent(AgentArgs),
-    Subscribe(SubscribeArgs),
-    PruneNodes(PruneArgs),
 }
 
 #[derive(Debug, Args)]
@@ -64,25 +62,11 @@ struct GetArgs {
 }
 
 #[derive(Debug, Args)]
-struct SubscribeArgs {
-    #[arg(long)]
-    namespace: String,
-    #[arg(long)]
-    handler: PathBuf,
-}
-
-#[derive(Debug, Args)]
 struct AgentArgs {
     #[arg(long)]
     once: bool,
     #[arg(long)]
     poll_interval: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct PruneArgs {
-    #[arg(long)]
-    older_than: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -152,8 +136,6 @@ fn run() -> Result<()> {
         Commands::Delete(args) => delete_manifest(&paths, &args.namespace),
         Commands::Reconcile(args) => reconcile(&paths, &args.namespace),
         Commands::Agent(args) => agent(&paths, &args),
-        Commands::Subscribe(args) => subscribe(&paths, &args.namespace, &args.handler),
-        Commands::PruneNodes(args) => prune_nodes(&paths, &args.older_than),
     }
 }
 
@@ -168,14 +150,10 @@ fn node_name() -> Result<String> {
         return Ok(value);
     }
 
-    let name = hostname::get().context("cannot read hostname")?;
-    let name = name
-        .to_string_lossy()
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    Ok(name)
+    let raw = hostname::get().context("cannot read hostname")?;
+    let raw = raw.to_string_lossy();
+    let short = raw.split_once('.').map(|(s, _)| s).unwrap_or(raw.as_ref());
+    Ok(short.to_string())
 }
 
 fn validate_component(kind: &str, value: &str) -> Result<()> {
@@ -205,7 +183,7 @@ fn now_utc() -> String {
 }
 
 fn read_config(path: &Path) -> Result<Config> {
-    read_toml(path)
+    Ok(read_optional_toml::<Config>(path)?.unwrap_or_default())
 }
 
 fn read_toml<T>(path: &Path) -> Result<T>
@@ -379,9 +357,11 @@ fn list_manifests(paths: &Paths, namespace: &str) -> Result<()> {
             continue;
         }
         match read_optional_toml::<Manifest>(&path) {
-            Ok(Some(manifest)) if manifest.namespace == namespace => manifests.push(manifest),
+            Ok(Some(manifest)) if manifest.namespace == namespace && manifest.node == node => {
+                manifests.push(manifest)
+            }
             Ok(Some(_)) => eprintln!(
-                "proxmox-notify: warning: skipping manifest with mismatched namespace: {}",
+                "proxmox-notify: warning: skipping manifest with mismatched fields: {}",
                 path.display()
             ),
             Ok(None) => {}
@@ -417,7 +397,11 @@ fn list_nodes(paths: &Paths) -> Result<()> {
             continue;
         }
         match read_optional_toml::<Announcement>(&path) {
-            Ok(Some(announcement)) => announcements.push(announcement),
+            Ok(Some(announcement)) if announcement.node == node => announcements.push(announcement),
+            Ok(Some(_)) => eprintln!(
+                "proxmox-notify: warning: skipping announcement with mismatched node: {}",
+                path.display()
+            ),
             Ok(None) => {}
             Err(err) => eprintln!(
                 "proxmox-notify: warning: skipping invalid announcement {}: {err:#}",
@@ -538,7 +522,7 @@ fn agent(paths: &Paths, args: &AgentArgs) -> Result<()> {
             Ok(interval) => interval,
             Err(err) => {
                 eprintln!("proxmox-notify: cannot read agent poll interval: {err:#}");
-                parse_std_duration(DEFAULT_RECONCILE_INTERVAL)?
+                parse_duration(DEFAULT_RECONCILE_INTERVAL)?
             }
         };
         thread::sleep(interval);
@@ -547,9 +531,13 @@ fn agent(paths: &Paths, args: &AgentArgs) -> Result<()> {
 
 fn agent_cycle(paths: &Paths, strict: bool) -> Result<()> {
     let config = read_config(&paths.config)?;
-    announce_with_config(paths, &config)?;
 
     let mut failures = 0usize;
+    if let Err(err) = announce_with_config(paths, &config) {
+        failures += 1;
+        eprintln!("proxmox-notify: announce failed: {err:#}");
+    }
+
     for namespace in &config.subscribes {
         let result = (|| -> Result<()> {
             validate_component("namespace", namespace)?;
@@ -567,18 +555,18 @@ fn agent_cycle(paths: &Paths, strict: bool) -> Result<()> {
     }
 
     if strict && failures > 0 {
-        bail!("{failures} reconcile handler(s) failed");
+        bail!("{failures} agent step(s) failed");
     }
     Ok(())
 }
 
 fn agent_poll_interval(paths: &Paths, override_interval: Option<&str>) -> Result<StdDuration> {
     if let Some(value) = override_interval {
-        return parse_std_duration(value);
+        return parse_duration(value);
     }
 
     let config = read_optional_toml::<Config>(&paths.config)?.unwrap_or_default();
-    parse_std_duration(
+    parse_duration(
         config
             .reconcile_interval
             .as_deref()
@@ -613,74 +601,28 @@ fn run_handler(handler: &Path, namespace: &str) -> Result<()> {
     Ok(())
 }
 
-fn subscribe(paths: &Paths, namespace: &str, handler: &Path) -> Result<()> {
-    validate_component("namespace", namespace)?;
-    if !is_executable(handler) {
-        bail!("handler is not executable: {}", handler.display());
-    }
-
-    let mut config = read_optional_toml::<Config>(&paths.config)?.unwrap_or_default();
-    if !config.subscribes.iter().any(|item| item == namespace) {
-        config.subscribes.push(namespace.to_string());
-    }
-    config
-        .handlers
-        .insert(namespace.to_string(), handler.display().to_string());
-    if config.reconcile_interval.is_none() {
-        config.reconcile_interval = Some(DEFAULT_RECONCILE_INTERVAL.to_string());
-    }
-    write_toml_atomic(&paths.config, &config)
-}
-
-fn prune_nodes(paths: &Paths, older_than: &str) -> Result<()> {
-    let cutoff = Utc::now() - parse_duration(older_than)?;
-    for node_dir in node_dirs(&paths.cluster_root)? {
-        let node = node_dir
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
-        validate_component("node", node)?;
-        let path = node_dir.join("announcements.toml");
-        let Some(announcement) = read_optional_toml::<Announcement>(&path)? else {
-            continue;
-        };
-        let announced_at = DateTime::parse_from_rfc3339(&announcement.announced_at)
-            .with_context(|| format!("invalid announced_at in {}", path.display()))?
-            .with_timezone(&Utc);
-        if announced_at < cutoff {
-            fs::remove_dir_all(&node_dir)
-                .with_context(|| format!("cannot prune {}", node_dir.display()))?;
-            println!("{node}");
-        }
-    }
-    Ok(())
-}
-
-fn parse_duration(value: &str) -> Result<ChronoDuration> {
+fn parse_duration(value: &str) -> Result<StdDuration> {
     let trimmed = value.trim();
     let digit_count = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digit_count == 0 {
         bail!("invalid duration: {value}");
     }
 
-    let amount: i64 = trimmed[..digit_count]
+    let amount: u64 = trimmed[..digit_count]
         .parse()
         .with_context(|| format!("invalid duration: {value}"))?;
-    if amount <= 0 {
+    if amount == 0 {
         bail!("duration must be positive: {value}");
     }
-    let unit = trimmed[digit_count..].trim();
-    match unit {
-        "" | "s" => Ok(ChronoDuration::seconds(amount)),
-        "m" | "min" => Ok(ChronoDuration::minutes(amount)),
-        "h" => Ok(ChronoDuration::hours(amount)),
-        "d" => Ok(ChronoDuration::days(amount)),
+    let multiplier: u64 = match trimmed[digit_count..].trim() {
+        "" | "s" => 1,
+        "m" | "min" => 60,
+        "h" => 3600,
+        "d" => 86400,
         _ => bail!("invalid duration: {value}"),
-    }
-}
-
-fn parse_std_duration(value: &str) -> Result<StdDuration> {
-    parse_duration(value)?
-        .to_std()
-        .with_context(|| format!("invalid duration: {value}"))
+    };
+    let seconds = amount
+        .checked_mul(multiplier)
+        .with_context(|| format!("duration overflows: {value}"))?;
+    Ok(StdDuration::from_secs(seconds))
 }

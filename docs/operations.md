@@ -40,16 +40,13 @@ Then enable the agent:
 systemctl enable --now proxmox-notify-agent.service
 ```
 
-Add a subscription from the CLI if you do not want to edit TOML directly:
+The already-running agent rereads `/etc/proxmox-notify/config.toml` on every
+poll cycle and reconciles every namespace listed in `subscribes`. Add or remove
+subscriptions by editing that file directly; no restart is required.
 
-```sh
-proxmox-notify subscribe \
-  --namespace cluster-folder-git \
-  --handler /usr/local/bin/cluster-folder-git-handler
-```
-
-`subscribe` only updates local config. The already-running agent reads config on
-each poll cycle and reconciles every namespace listed in `subscribes`.
+Stale per-node directories under `/etc/pve/proxmox-notify/<nodename>/` are an
+admin-managed concern. When a node is permanently decommissioned, remove its
+directory by hand from any cluster member.
 
 ## Publish
 

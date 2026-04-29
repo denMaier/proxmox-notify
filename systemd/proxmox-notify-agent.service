@@ -9,5 +9,16 @@ ExecStart=/usr/local/bin/proxmox-notify agent
 Restart=on-failure
 RestartSec=5s
 
+RuntimeDirectory=proxmox-notify
+NoNewPrivileges=true
+PrivateTmp=true
+LockPersonality=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
 [Install]
 WantedBy=multi-user.target
