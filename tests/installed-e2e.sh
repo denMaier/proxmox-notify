@@ -103,5 +103,3 @@ if "$bin" publish --namespace ../bad --payload-file "$payload" 2>/dev/null; then
   printf 'invalid namespace was accepted\n' >&2
   exit 1
 fi
-
-bash -c 'set -euo pipefail; source /usr/local/lib/proxmox-notify/proxmox-notify.sh; proxmox_notify_list_nodes >/dev/null'

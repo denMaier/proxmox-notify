@@ -1,8 +1,8 @@
 # proxmox-notify
 
-`proxmox-notify` is a small CLI and sourceable bash library for node-to-node
-state announcements on a Proxmox cluster. It uses pmxcfs at
-`/etc/pve/proxmox-notify` as the only transport.
+`proxmox-notify` is a small Rust CLI for node-to-node state announcements on a
+Proxmox cluster. It uses pmxcfs at `/etc/pve/proxmox-notify` as the only
+transport.
 
 The model is intentionally narrow:
 
@@ -23,7 +23,6 @@ The model is intentionally narrow:
 ## Files
 
 - CLI: `/usr/local/bin/proxmox-notify`
-- Bash library: `/usr/local/lib/proxmox-notify/proxmox-notify.sh`
 - Local config: `/etc/proxmox-notify/config.toml`
 - Cluster state: `/etc/pve/proxmox-notify/`
 - Runtime locks: `/run/proxmox-notify/`
@@ -79,7 +78,6 @@ Use Nix:
 ```sh
 nix develop
 nix build
-nix build .#deb
 ```
 
 ## Verification

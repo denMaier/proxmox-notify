@@ -1,18 +1,26 @@
 PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc
 DESTDIR ?=
+CARGO ?= cargo
+BUILD_PROFILE ?= release
 
 BINDIR := $(PREFIX)/bin
-LIBDIR := $(PREFIX)/lib/proxmox-notify
 SYSTEMD_DIR := $(PREFIX)/lib/systemd/system
+PROFILE_DIR := $(if $(filter release,$(BUILD_PROFILE)),release,debug)
+CARGO_PROFILE_FLAG := $(if $(filter release,$(BUILD_PROFILE)),--release,)
+TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),target)
+BINARY := $(TARGET_DIR)/$(PROFILE_DIR)/proxmox-notify
+DEBUG_BINARY := $(TARGET_DIR)/debug/proxmox-notify
+SMOKE_BINARY := $(if $(filter /%,$(DEBUG_BINARY)),$(DEBUG_BINARY),$(CURDIR)/$(DEBUG_BINARY))
 
-.PHONY: install package test ci
+.PHONY: build install package test ci
 
-install:
-	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(LIBDIR)/helpers" "$(DESTDIR)$(SYSTEMD_DIR)" "$(DESTDIR)$(SYSCONFDIR)/proxmox-notify"
-	install -m755 bin/proxmox-notify "$(DESTDIR)$(BINDIR)/proxmox-notify"
-	install -m644 lib/proxmox-notify/proxmox-notify.sh "$(DESTDIR)$(LIBDIR)/proxmox-notify.sh"
-	install -m755 lib/proxmox-notify/helpers/toml.py "$(DESTDIR)$(LIBDIR)/helpers/toml.py"
+build:
+	$(CARGO) build $(CARGO_PROFILE_FLAG)
+
+install: build
+	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(SYSTEMD_DIR)" "$(DESTDIR)$(SYSCONFDIR)/proxmox-notify"
+	install -m755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/proxmox-notify"
 	install -m644 systemd/proxmox-notify-announce.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-announce.service"
 	install -m644 systemd/proxmox-notify-watch@.path "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-watch@.path"
 	install -m644 systemd/proxmox-notify-watch@.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-watch@.service"
@@ -24,15 +32,16 @@ package:
 	scripts/build-deb
 
 test:
-	tests/smoke.sh
+	$(CARGO) test
+	$(CARGO) build
+	PROXMOX_NOTIFY_BIN="$(SMOKE_BINARY)" tests/smoke.sh
 
 ci:
-	bash -n bin/proxmox-notify
-	bash -n lib/proxmox-notify/proxmox-notify.sh
+	$(CARGO) fmt --check
+	$(CARGO) clippy --all-targets -- -D warnings
 	bash -n scripts/build-deb
 	bash -n tests/smoke.sh
 	bash -n tests/installed-e2e.sh
 	sh -n packaging/postinst
 	sh -n packaging/postrm
-	python3 -m py_compile lib/proxmox-notify/helpers/toml.py
 	$(MAKE) test

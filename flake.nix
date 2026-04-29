@@ -26,82 +26,35 @@
         );
     in
     {
-      packages = forSystems linuxSystems (
-        pkgs:
-        let
-          runtimePath = pkgs.lib.makeBinPath (
-            [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.python3
-              pkgs.util-linux
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.systemd ]
-          );
-        in
-        {
-          default = pkgs.stdenvNoCC.mkDerivation {
-            pname = "proxmox-notify";
-            inherit version;
-            src = self;
+      packages = forSystems linuxSystems (pkgs: {
+        default = pkgs.rustPlatform.buildRustPackage {
+          pname = "proxmox-notify";
+          inherit version;
+          src = self;
 
-            nativeBuildInputs = [
-              pkgs.gnumake
-              pkgs.makeWrapper
-            ];
+          cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
 
-            dontBuild = true;
+          postInstall = ''
+            install -Dm644 config/config.toml "$out/etc/proxmox-notify/config.toml"
+            install -Dm644 systemd/proxmox-notify-announce.service "$out/lib/systemd/system/proxmox-notify-announce.service"
+            install -Dm644 systemd/proxmox-notify-watch@.path "$out/lib/systemd/system/proxmox-notify-watch@.path"
+            install -Dm644 systemd/proxmox-notify-watch@.service "$out/lib/systemd/system/proxmox-notify-watch@.service"
+            install -Dm644 systemd/proxmox-notify-reconcile@.timer "$out/lib/systemd/system/proxmox-notify-reconcile@.timer"
+            install -Dm644 systemd/proxmox-notify-reconcile@.service "$out/lib/systemd/system/proxmox-notify-reconcile@.service"
+            substituteInPlace "$out"/lib/systemd/system/proxmox-notify-*.service \
+              --replace-fail /usr/local/bin/proxmox-notify "$out/bin/proxmox-notify"
+            wrapProgram "$out/bin/proxmox-notify" \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
+          '';
 
-            installPhase = ''
-              runHook preInstall
-
-              make install DESTDIR="$out" PREFIX= SYSCONFDIR=/etc
-              patchShebangs "$out/bin" "$out/lib/proxmox-notify/helpers"
-              substituteInPlace "$out"/lib/systemd/system/proxmox-notify-*.service \
-                --replace-fail /usr/local/bin/proxmox-notify "$out/bin/proxmox-notify"
-              wrapProgram "$out/bin/proxmox-notify" \
-                --prefix PATH : ${runtimePath}
-
-              runHook postInstall
-            '';
-
-            meta = {
-              description = "pmxcfs-backed state announcement CLI for Proxmox clusters";
-              platforms = linuxSystems;
-              mainProgram = "proxmox-notify";
-            };
+          meta = {
+            description = "pmxcfs-backed state announcement CLI for Proxmox clusters";
+            platforms = linuxSystems;
+            mainProgram = "proxmox-notify";
           };
-
-          deb = pkgs.stdenvNoCC.mkDerivation {
-            pname = "proxmox-notify-deb";
-            inherit version;
-            src = self;
-
-            nativeBuildInputs = [
-              pkgs.dpkg
-              pkgs.gnumake
-            ];
-
-            buildPhase = ''
-              runHook preBuild
-
-              patchShebangs .
-              BUILD_DIR="$TMPDIR/build" VERSION="${version}" scripts/build-deb
-
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-
-              mkdir -p "$out"
-              cp "$TMPDIR/build/proxmox-notify_${version}_all.deb" "$out/"
-
-              runHook postInstall
-            '';
-          };
-        }
-      );
+        };
+      });
 
       checks = forSystems linuxSystems (pkgs: {
         default = pkgs.stdenvNoCC.mkDerivation {
@@ -109,16 +62,15 @@
           src = self;
 
           nativeBuildInputs = [
-            pkgs.gnumake
+            pkgs.bash
             pkgs.python3
-            pkgs.util-linux
           ];
 
           buildPhase = ''
             runHook preBuild
 
-            patchShebangs .
-            make ci
+            PROXMOX_NOTIFY_BIN="${self.packages.${pkgs.system}.default}/bin/proxmox-notify" \
+              tests/smoke.sh
 
             runHook postBuild
           '';
@@ -134,18 +86,21 @@
           packages =
             [
               pkgs.bash
+              pkgs.cargo
+              pkgs.clippy
               pkgs.git
               pkgs.gh
               pkgs.gnumake
               pkgs.python3
+              pkgs.rustc
+              pkgs.rustfmt
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.dpkg
-              pkgs.util-linux
             ];
 
           shellHook = ''
-            echo "proxmox-notify dev shell"
+            echo "proxmox-notify Rust dev shell"
             echo "Run: make ci"
           '';
         };

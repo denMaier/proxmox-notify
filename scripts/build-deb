@@ -2,10 +2,11 @@
 set -euo pipefail
 
 version="${VERSION:-0.1.0}"
+arch="${ARCH:-$(dpkg --print-architecture)}"
 repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="${BUILD_DIR:-${repo_root}/build}"
-pkg_root="${build_dir}/proxmox-notify_${version}_all"
-deb_path="${build_dir}/proxmox-notify_${version}_all.deb"
+pkg_root="${build_dir}/proxmox-notify_${version}_${arch}"
+deb_path="${build_dir}/proxmox-notify_${version}_${arch}.deb"
 
 rm -rf -- "$pkg_root"
 mkdir -p -- "$pkg_root/DEBIAN" "$build_dir"
@@ -17,11 +18,11 @@ Package: proxmox-notify
 Version: ${version}
 Section: admin
 Priority: optional
-Architecture: all
+Architecture: ${arch}
 Maintainer: proxmox-notify maintainers <root@localhost>
-Depends: bash, python3, coreutils, util-linux, systemd
+Depends: libc6 (>= 2.36), libgcc-s1, systemd
 Description: pmxcfs-backed node-to-node state announcements for Proxmox
- Small library and CLI for publishing node-owned manifests under /etc/pve.
+ Single Rust CLI for publishing node-owned manifests under /etc/pve.
 CONTROL
 
 cat >"$pkg_root/DEBIAN/conffiles" <<'CONFFILES'

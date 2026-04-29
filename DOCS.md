@@ -16,4 +16,3 @@ local locks in `/run`, and project-owned handlers that reconcile current state.
 - Run local checks: `make ci`
 - Enter a Nix dev shell: `nix develop`
 - Build with Nix: `nix build`
-- Build the `.deb` with Nix: `nix build .#deb`

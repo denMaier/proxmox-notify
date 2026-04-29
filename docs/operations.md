@@ -11,13 +11,12 @@ make package
 Install the generated `.deb` on every Proxmox node:
 
 ```sh
-dpkg -i build/proxmox-notify_0.1.0_all.deb
+dpkg -i build/proxmox-notify_0.1.0_$(dpkg --print-architecture).deb
 ```
 
 The package installs:
 
 - `/usr/local/bin/proxmox-notify`
-- `/usr/local/lib/proxmox-notify/proxmox-notify.sh`
 - `/usr/local/lib/systemd/system/proxmox-notify-*.{service,path,timer}`
 - `/etc/proxmox-notify/config.toml`
 
