@@ -471,10 +471,16 @@ fn reconcile(paths: &Paths, namespace: &str) -> Result<()> {
         .open(&lock_path)
         .with_context(|| format!("cannot open {}", lock_path.display()))?;
 
-    if lock.try_lock_exclusive().is_err() {
-        File::create(&rerun_path)
-            .with_context(|| format!("cannot create {}", rerun_path.display()))?;
-        return Ok(());
+    match lock.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            File::create(&rerun_path)
+                .with_context(|| format!("cannot create {}", rerun_path.display()))?;
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("cannot lock {}", lock_path.display()));
+        }
     }
 
     let result = {
