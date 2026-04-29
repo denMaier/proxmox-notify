@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="${VERSION:-0.1.0}"
+repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="${BUILD_DIR:-${repo_root}/build}"
+pkg_root="${build_dir}/proxmox-notify_${version}_all"
+deb_path="${build_dir}/proxmox-notify_${version}_all.deb"
+
+rm -rf -- "$pkg_root"
+mkdir -p -- "$pkg_root/DEBIAN" "$build_dir"
+
+make -C "$repo_root" install DESTDIR="$pkg_root"
+
+cat >"$pkg_root/DEBIAN/control" <<CONTROL
+Package: proxmox-notify
+Version: ${version}
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: proxmox-notify maintainers <root@localhost>
+Depends: bash, python3, coreutils, util-linux, systemd
+Description: pmxcfs-backed node-to-node state announcements for Proxmox
+ Small library and CLI for publishing node-owned manifests under /etc/pve.
+CONTROL
+
+cat >"$pkg_root/DEBIAN/conffiles" <<'CONFFILES'
+/etc/proxmox-notify/config.toml
+CONFFILES
+
+install -m755 "$repo_root/packaging/postinst" "$pkg_root/DEBIAN/postinst"
+install -m755 "$repo_root/packaging/postrm" "$pkg_root/DEBIAN/postrm"
+
+dpkg-deb --build "$pkg_root" "$deb_path"
+printf '%s\n' "$deb_path"

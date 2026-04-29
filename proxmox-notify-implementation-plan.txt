@@ -1,0 +1,503 @@
+proxmox-notify — Agent Implementation Plan
+============================================
+
+Purpose
+-------
+
+Implement proxmox-notify, a small reusable library and CLI for
+node-to-node state announcements on a Proxmox cluster. The library uses
+the Proxmox cluster filesystem (pmxcfs, mounted at /etc/pve) as the
+sole transport. There is no broker, no daemon beyond standard systemd
+units, and no external dependency on NATS, Consul, etcd, or anything
+similar.
+
+This document is the full implementation plan. The agent should treat
+it as the source of truth for scope, contracts, and design rules. When
+in doubt, prefer simplicity and correctness over flexibility.
+
+A separate task — not covered here — will migrate cluster-folder-git
+to consume this library. Do not bake any cluster-folder-git-specific
+assumptions into proxmox-notify.
+
+
+What proxmox-notify is
+----------------------
+
+A primitive that lets each node on a Proxmox cluster:
+
+  - announce which namespaces it participates in
+  - publish a per-namespace manifest describing its current state
+  - subscribe to namespaces it cares about
+  - react, via project-supplied handlers, when peer manifests change
+  - converge to correct state via a periodic reconcile, regardless of
+    whether wake-up events were observed
+
+
+What proxmox-notify is NOT
+--------------------------
+
+  - Not a message queue. No history, no replay, no ordering guarantees
+    beyond "current state wins."
+  - Not a high-frequency event bus. pmxcfs is for cluster config —
+    small files, infrequent writes. The library inherits that
+    envelope.
+  - Not a trust boundary. Manifest payloads are opaque. Verification
+    (signatures, schema, business rules) is the consumer's job.
+  - Not a CAS or transactional store. There is no multi-writer
+    coordination because the design is single-writer per file.
+  - Not cross-cluster. One Proxmox cluster, one pmxcfs.
+  - Not a deployment, version-control, or activation system. It moves
+    bytes between nodes; that is all.
+
+
+Non-negotiable design principles
+--------------------------------
+
+These come from prior design work and must be preserved:
+
+  1. Single-writer per file. Every file under /etc/pve/proxmox-notify
+     has exactly one node that writes it. Other nodes read but never
+     write it. There is no shared file written by multiple nodes.
+
+  2. The file is the source of truth; the inotify event is just a
+     wake-up. A consumer that missed the event but reads the namespace
+     on startup must converge correctly. No logic may require seeing
+     every event.
+
+  3. Atomic writes only. Every write goes to <path>.tmp followed by
+     rename(2). Never edit in place. Watchers must use close_write and
+     moved_to events, not naive modify.
+
+  4. Idempotent handlers. Consumers must be safe to invoke twice with
+     the same state. The library guarantees nothing about
+     exactly-once delivery.
+
+  5. Reconciliation, not event processing. Handlers receive a
+     namespace name and look at the whole cluster state for that
+     namespace. They do not process individual events. Two triggers
+     coalesce into one reconcile run.
+
+  6. Single-flight per namespace. At most one handler invocation per
+     namespace can be running at a time on a given node. Triggers
+     arriving during a run are coalesced into at most one queued run.
+
+  7. Quorum-aware. pmxcfs goes read-only on the minority side of a
+     partition. Publish must fail cleanly without retry-storming.
+     Reads continue with last-known state. Reconcile re-converges
+     after partition heals.
+
+  8. Stay inside pmxcfs's envelope. Pointer-shaped state, infrequent
+     updates. No status streams, no metrics, no logs in /etc/pve.
+     If consumers want those, journald is the right place.
+
+
+Storage layout
+--------------
+
+Root: /etc/pve/proxmox-notify/
+
+Layout:
+
+  /etc/pve/proxmox-notify/
+  └── <nodename>/
+      ├── announcements.toml
+      └── manifests/
+          └── <namespace>.toml
+
+Everything a node owns lives under its own directory. There is no
+shared file. The set of participating nodes is defined as the set of
+subdirectories under the root with an announcements.toml.
+
+announcements.toml (written by <nodename> only):
+
+  node = "pve-01"
+  announced_at = "2026-04-28T12:00:00Z"
+  publishes = ["cluster-folder-git"]
+  subscribes = ["cluster-folder-git", "vm-templates"]
+
+manifests/<namespace>.toml (written by <nodename> only):
+
+  namespace = "cluster-folder-git"
+  node = "pve-01"
+  timestamp = "2026-04-28T12:00:00Z"
+
+  [payload]
+  # opaque to proxmox-notify; whatever the publishing project wants
+
+The envelope fields (namespace, node, timestamp) are owned by the
+library. The [payload] table belongs to the consumer. Consumers must
+not modify or interpret the envelope; the library must not interpret
+the payload.
+
+Namespace names: constrained to [A-Za-z0-9_.-]+, length-limited.
+Reject anything else on write.
+
+Local subscription state (which namespaces this node listens to and
+which handler runs for each) is NOT stored in /etc/pve. It is
+node-local config, lives under /etc/proxmox-notify/.
+
+
+Local node configuration
+------------------------
+
+/etc/proxmox-notify/config.toml (node-local, not in pmxcfs):
+
+  publishes = ["cluster-folder-git"]
+  subscribes = ["cluster-folder-git", "vm-templates"]
+
+  [handlers]
+  cluster-folder-git = "/usr/local/bin/cluster-folder-git-handler"
+  vm-templates       = "/usr/local/bin/vm-templates-handler"
+
+The publishes/subscribes lists drive the contents of this node's
+announcements.toml and the set of enabled systemd units. Handler paths
+are looked up at watch/reconcile time.
+
+
+CLI surface
+-----------
+
+Binary: /usr/local/bin/proxmox-notify
+
+Commands:
+
+  proxmox-notify announce
+      Reads /etc/proxmox-notify/config.toml. Writes (atomically) this
+      node's announcements.toml under its node directory. Idempotent.
+      Used by the announce systemd unit at boot and on config change.
+
+  proxmox-notify publish --namespace <ns> --payload-file <path>
+      Atomically writes this node's manifest for namespace <ns>. The
+      payload file contents become the [payload] section. Fails if
+      pmxcfs is read-only or if <ns> is not in this node's publishes
+      list.
+
+  proxmox-notify get --namespace <ns> [--node <nodename>]
+      Prints a peer's manifest for the namespace (default: this node).
+
+  proxmox-notify list-manifests --namespace <ns>
+      Prints all peer manifests for the namespace as a structured
+      blob (TOML array or JSON, agent's choice — pick one and stick
+      to it). This is the helper handlers use to read cluster state.
+
+  proxmox-notify list-nodes
+      Lists nodes that have an announcements.toml, with their
+      publishes/subscribes lists.
+
+  proxmox-notify delete --namespace <ns>
+      Removes this node's manifest for the namespace. Atomic.
+
+  proxmox-notify reconcile --namespace <ns>
+      Looks up the handler for <ns> in local config and invokes it
+      under single-flight lock. Used by the reconcile timer and as
+      ExecStartPre on watch units.
+
+  proxmox-notify subscribe --namespace <ns> --handler <path>
+      Convenience: writes the handler entry into local config and
+      enables the matching systemd path + timer units. The agent may
+      treat this as optional for v1; the same effect can be achieved
+      by editing config.toml and running systemctl enable manually.
+
+All commands print clear error messages on stderr and return non-zero
+on failure. No retries inside the CLI; callers (systemd, hooks)
+decide retry policy.
+
+
+Bash library
+------------
+
+Path: /usr/local/lib/proxmox-notify/proxmox-notify.sh
+
+Sourceable. Exposes the same operations as functions for use inside
+other shell programs (especially git hooks). Function names mirror CLI
+verbs with a proxmox_notify_ prefix:
+
+  proxmox_notify_announce
+  proxmox_notify_publish
+  proxmox_notify_get
+  proxmox_notify_list_manifests
+  proxmox_notify_list_nodes
+  proxmox_notify_delete
+  proxmox_notify_reconcile
+
+Functions return non-zero on failure with a clear message on stderr.
+No exotic shell features; must work under /bin/bash on stock Proxmox.
+
+
+Handler contract
+----------------
+
+A handler is any executable. When invoked by proxmox-notify, it
+receives:
+
+  argv[1] = namespace name
+
+That is it. The handler is expected to:
+
+  1. Call `proxmox-notify list-manifests --namespace <ns>` (or read
+     the files directly) to get the current cluster state for this
+     namespace.
+  2. Read its own local state (whatever that means for the project).
+  3. Decide if anything needs to happen. If not, exit 0 immediately.
+     This is the no-op fast path and will be the most-executed code
+     in the system by a wide margin. It must not log noise, must not
+     do expensive work, must not take additional locks.
+  4. Otherwise: do the work (fetch, verify, apply), then publish an
+     updated manifest via `proxmox-notify publish`, then exit 0.
+
+Exit codes:
+
+  0       = handled (including no-op)
+  non-0   = error; logged via journald, does not break the watcher
+
+Handlers must be idempotent. The library makes no exactly-once
+guarantee.
+
+
+Single-flight enforcement
+-------------------------
+
+Per-namespace single-flight is the library's responsibility, not the
+handler's. Implementation: a per-namespace lock file under
+/run/proxmox-notify/<namespace>.lock, acquired non-blocking via
+flock(1) or equivalent inside the reconcile command.
+
+Behavior:
+
+  - If the lock is free: acquire, run handler, release.
+  - If the lock is held: do not block. Set a "rerun needed" flag
+    (a sentinel file like /run/proxmox-notify/<namespace>.rerun)
+    and exit 0.
+  - When a reconcile run finishes, before releasing the lock, check
+    for the rerun sentinel. If present: clear it and run once more.
+    This guarantees at most one queued rerun regardless of how many
+    triggers fired during a run.
+
+This pattern collapses N triggers into at most 2 handler invocations
+per burst.
+
+
+Systemd units
+-------------
+
+All units shipped with the package. Place under
+/usr/local/lib/systemd/system/.
+
+  proxmox-notify-announce.service (Type=oneshot)
+      ExecStart=/usr/local/bin/proxmox-notify announce
+      After=pve-cluster.service
+      Requires=pve-cluster.service
+      Run at boot and on config change.
+
+  proxmox-notify-watch@.path
+      PathChanged=/etc/pve/proxmox-notify (recursive watch on the
+          full tree)
+      Unit=proxmox-notify-watch@%i.service
+      After=pve-cluster.service
+      Requires=pve-cluster.service
+
+      Note: the path unit fires on ANY change under the root.
+      Filtering to "only changes that matter for namespace %i"
+      happens in the service via the reconcile command, which
+      no-ops cheaply when nothing has changed for that namespace.
+      This is intentional — the path unit is a wake-up, the
+      reconcile is the truth.
+
+  proxmox-notify-watch@.service (Type=oneshot)
+      ExecStartPre=/usr/local/bin/proxmox-notify reconcile --namespace %i
+      ExecStart=/bin/true
+      After=pve-cluster.service
+      Requires=pve-cluster.service
+
+      (Or fold ExecStartPre into ExecStart; either works. The point
+      is reconcile runs on every trigger.)
+
+  proxmox-notify-reconcile@.timer
+      OnBootSec=30s
+      OnUnitActiveSec=60s
+      Unit=proxmox-notify-reconcile@%i.service
+
+  proxmox-notify-reconcile@.service (Type=oneshot)
+      ExecStart=/usr/local/bin/proxmox-notify reconcile --namespace %i
+      After=pve-cluster.service
+      Requires=pve-cluster.service
+
+For each namespace this node subscribes to, enable
+proxmox-notify-watch@<ns>.path and proxmox-notify-reconcile@<ns>.timer.
+
+Both watch and reconcile call the same code path
+(proxmox-notify reconcile). The watch is the latency optimization;
+the timer is the correctness guarantee. They are interchangeable from
+the handler's perspective.
+
+
+Lifecycle / data flow
+---------------------
+
+  1. Boot. proxmox-notify-announce.service runs, writing this node's
+     announcements.toml.
+  2. Subscribe. For each namespace in config.toml's subscribes list,
+     enable the corresponding path and timer units.
+  3. Publish. A producer (e.g. git post-commit hook) calls
+     `proxmox-notify publish --namespace X --payload-file Y`.
+     Library writes <path>.tmp, renames into place. pmxcfs replicates.
+  4. Wake-up. On every other subscribed node, the path unit fires.
+     The watch service runs `proxmox-notify reconcile --namespace X`.
+  5. Reconcile under lock. Single-flight acquires the lock, invokes
+     the configured handler with the namespace name. Handler reads
+     all peer manifests, compares to local state, acts (or no-ops).
+  6. Periodic reconcile. Independently, every 60s the reconcile timer
+     fires the same code path. Convergence floor for missed events,
+     post-partition recovery, and general robustness.
+  7. Partition. If a node loses quorum, pmxcfs goes read-only.
+     Publish from that node fails cleanly. Reads continue. When
+     quorum returns, reconcile timer naturally re-converges.
+
+
+Edge cases the implementation must handle
+-----------------------------------------
+
+  - Atomicity: write-tmp + rename. Never partial writes. The library
+    must refuse non-atomic fallbacks.
+  - Filename safety: validate namespace and node names hard. Reject
+    paths, slashes, dots-only, leading dashes.
+  - Stale node directories: if a node disappears, its directory
+    lingers. Do not auto-clean. Provide
+    `proxmox-notify prune-nodes --older-than <duration>` for
+    operators to invoke manually.
+  - Manifest deletion: deletes show up via reconcile noticing the
+    file is gone, not via a separate handler signal. Handler
+    contract is "look at current state," and "current state" is
+    "files present right now." This keeps the contract uniform.
+  - inotify on FUSE: systemd path units on /etc/pve work on current
+    Proxmox (the UI relies on similar mechanisms). The reconcile
+    timer is the correctness guarantee. Never build logic that
+    requires the path unit to fire.
+  - Self-echo no-ops: when this node publishes, its own path unit
+    will fire, triggering a reconcile that sees its own state. The
+    handler's fast-path no-op check handles this. Acceptable cost.
+  - Rapid bursts: single-flight coalescing handles them. Worst case
+    is 2 reconciles per node per burst regardless of trigger count.
+  - TOML parsing: pick one parser available on stock Proxmox. Stock
+    Debian/Proxmox has python3 with tomllib (Python 3.11+). If the
+    target Proxmox version's Python is older, use the tomli package
+    or shell out to a small helper. Do not vendor a parser.
+
+
+Verify-it-works checklist
+-------------------------
+
+Run on a real 3-node cluster before declaring done:
+
+  1. Install package on all three nodes. Confirm
+     <nodename>/announcements.toml appears under /etc/pve/proxmox-notify
+     for each, visible from every node, within seconds of boot.
+  2. From node A, publish a test manifest. Confirm the file appears
+     under A's manifests/ on B and C, and the watch service fires the
+     handler with the correct namespace name as argv[1].
+  3. Stop the watch service on C. Publish from A. Restart the watch
+     service on C. Confirm the ExecStartPre reconcile picks up the
+     change without depending on a live inotify event.
+  4. Disconnect C from the cluster network. Confirm reads of
+     last-known peer manifests still work. Confirm publish from C
+     fails cleanly without retry-storming. Reconnect. Confirm
+     reconcile timer brings C back in sync within one timer interval.
+  5. Publish-then-delete in rapid succession. Confirm no half-written
+     file is ever observed by a watcher. Confirm reconcile after
+     settles consistently.
+  6. Trigger storm: cause N nodes to all publish in the same second.
+     Confirm each node runs at most 2 handler invocations for that
+     namespace (single-flight coalescing). Confirm final state is
+     consistent across the cluster.
+  7. Stale data: corrupt a manifest file (write garbage that fails
+     TOML parse). Confirm the handler logs a clear error and
+     reconcile for other manifests still works.
+
+If any of these fail, stop and report. Do not paper over with retries
+or workarounds.
+
+
+Implementation language
+-----------------------
+
+Default: bash for the CLI, library, and systemd unit glue. Reasons:
+matches the existing host-config tooling style, fits file-and-fork
+operations naturally, and keeps the package dependency-free aside
+from coreutils, util-linux (flock), and a TOML parser.
+
+Use Python 3 (already on Proxmox) only for TOML read/write helpers if
+shelling out to python3 -c is cleaner than parsing TOML in bash. Keep
+those helpers tiny and inline; do not grow a Python codebase.
+
+Do not introduce Go or Rust unless a follow-up task explicitly
+requests it. Single-binary distribution is not a requirement here —
+this is a system tool installed via package, not a deployable
+artifact.
+
+
+Packaging and paths
+-------------------
+
+Match the existing host-config layout:
+
+  /usr/local/bin/proxmox-notify
+  /usr/local/lib/proxmox-notify/proxmox-notify.sh
+  /usr/local/lib/proxmox-notify/helpers/   (TOML helpers etc.)
+  /usr/local/lib/systemd/system/proxmox-notify-*.service
+  /usr/local/lib/systemd/system/proxmox-notify-*.path
+  /usr/local/lib/systemd/system/proxmox-notify-*.timer
+  /etc/proxmox-notify/config.toml          (node-local config)
+
+Packaging format: whatever host-config currently uses. If unclear,
+ask before deciding.
+
+
+Out of scope for this task
+--------------------------
+
+  - Migrating cluster-folder-git to use this library. Separate task.
+  - Other consumers (vm-templates, deploy-state, etc.). Not yet built.
+  - Web UI, monitoring dashboards, Proxmox UI integration.
+  - Cross-cluster federation.
+  - Authentication or signing of manifests beyond what file
+    permissions and pmxcfs already provide.
+
+
+Things to ask the operator before starting
+------------------------------------------
+
+Do not assume answers. Confirm:
+
+  1. TOML vs JSON for envelope and payload files. The plan assumes
+     TOML. If the agent finds that stock Proxmox config files are
+     not actually TOML and the operator wants strict consistency
+     with Proxmox conventions, surface this and ask.
+  2. Reconcile timer interval. Plan assumes 60s. Confirm or override.
+  3. Whether `proxmox-notify subscribe` should auto-enable systemd
+     units, or whether the operator prefers to manage units
+     explicitly. Plan leaves the convenience path optional.
+  4. Whether the announce service should re-run on config change
+     (via systemd path unit on /etc/proxmox-notify/config.toml) or
+     whether operators are expected to systemctl restart it manually.
+  5. Packaging format if not obvious from existing host-config tooling.
+
+Surface these as a short list at the start of work. Proceed once
+answered.
+
+
+Summary
+-------
+
+The library is small. The model is small. The correctness argument is
+small:
+
+  - Each node writes only its own files.
+  - Pmxcfs replicates them.
+  - Other nodes' watchers fire on change.
+  - Watchers and timers both run the same reconcile.
+  - Reconcile is single-flight per namespace.
+  - Handlers look at cluster state, not at events, and no-op fast
+    when nothing has changed.
+
+That is the whole system. Resist any urge to add cleverness on top.
+The simplicity is the feature.

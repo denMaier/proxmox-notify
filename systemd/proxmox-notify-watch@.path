@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch proxmox-notify cluster state for %I
+After=pve-cluster.service
+Requires=pve-cluster.service
+
+[Path]
+PathChanged=/etc/pve/proxmox-notify
+Unit=proxmox-notify-watch@%i.service
+
+[Install]
+WantedBy=multi-user.target

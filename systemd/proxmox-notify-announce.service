@@ -1,0 +1,11 @@
+[Unit]
+Description=Announce proxmox-notify namespaces
+After=pve-cluster.service
+Requires=pve-cluster.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/proxmox-notify announce
+
+[Install]
+WantedBy=multi-user.target
