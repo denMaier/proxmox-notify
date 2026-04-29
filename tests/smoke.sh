@@ -66,6 +66,10 @@ test "$manifest_before" = "$manifest_after"
 "$bin" reconcile --namespace demo
 grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
 
+>"$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+"$bin" agent --once
+grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+
 if "$bin" publish --namespace ../bad --payload-file "$payload" 2>/dev/null; then
   printf 'invalid namespace was accepted\n' >&2
   exit 1

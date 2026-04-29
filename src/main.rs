@@ -4,9 +4,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
+use std::thread;
+use std::time::Duration as StdDuration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use clap::{Args, Parser, Subcommand};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,7 @@ enum Commands {
     ListNodes,
     Delete(NamespaceArgs),
     Reconcile(NamespaceArgs),
+    Agent(AgentArgs),
     Subscribe(SubscribeArgs),
     PruneNodes(PruneArgs),
 }
@@ -66,6 +69,14 @@ struct SubscribeArgs {
     namespace: String,
     #[arg(long)]
     handler: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct AgentArgs {
+    #[arg(long)]
+    once: bool,
+    #[arg(long)]
+    poll_interval: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -140,6 +151,7 @@ fn run() -> Result<()> {
         Commands::ListNodes => list_nodes(&paths),
         Commands::Delete(args) => delete_manifest(&paths, &args.namespace),
         Commands::Reconcile(args) => reconcile(&paths, &args.namespace),
+        Commands::Agent(args) => agent(&paths, &args),
         Commands::Subscribe(args) => subscribe(&paths, &args.namespace, &args.handler),
         Commands::PruneNodes(args) => prune_nodes(&paths, &args.older_than),
     }
@@ -269,6 +281,10 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
 
 fn announce(paths: &Paths) -> Result<()> {
     let config = read_config(&paths.config)?;
+    announce_with_config(paths, &config)
+}
+
+fn announce_with_config(paths: &Paths, config: &Config) -> Result<()> {
     let node = node_name()?;
     validate_component("node", &node)?;
 
@@ -285,8 +301,8 @@ fn announce(paths: &Paths) -> Result<()> {
     let announcement = Announcement {
         node,
         announced_at: now_utc(),
-        publishes: config.publishes,
-        subscribes: config.subscribes,
+        publishes: config.publishes.clone(),
+        subscribes: config.subscribes.clone(),
     };
     write_toml_atomic(&path, &announcement)
 }
@@ -455,6 +471,10 @@ fn reconcile(paths: &Paths, namespace: &str) -> Result<()> {
         .get(namespace)
         .ok_or_else(|| anyhow!("no handler configured for namespace: {namespace}"))?;
     let handler_path = Path::new(handler);
+    reconcile_with_handler(paths, namespace, handler_path)
+}
+
+fn reconcile_with_handler(paths: &Paths, namespace: &str, handler_path: &Path) -> Result<()> {
     if !is_executable(handler_path) {
         bail!("handler is not executable: {}", handler_path.display());
     }
@@ -502,6 +522,70 @@ fn reconcile(paths: &Paths, namespace: &str) -> Result<()> {
     result
 }
 
+fn agent(paths: &Paths, args: &AgentArgs) -> Result<()> {
+    loop {
+        match agent_cycle(paths, args.once) {
+            Ok(()) => {}
+            Err(err) if args.once => return Err(err),
+            Err(err) => eprintln!("proxmox-notify: agent cycle failed: {err:#}"),
+        }
+
+        if args.once {
+            return Ok(());
+        }
+
+        let interval = match agent_poll_interval(paths, args.poll_interval.as_deref()) {
+            Ok(interval) => interval,
+            Err(err) => {
+                eprintln!("proxmox-notify: cannot read agent poll interval: {err:#}");
+                parse_std_duration(DEFAULT_RECONCILE_INTERVAL)?
+            }
+        };
+        thread::sleep(interval);
+    }
+}
+
+fn agent_cycle(paths: &Paths, strict: bool) -> Result<()> {
+    let config = read_config(&paths.config)?;
+    announce_with_config(paths, &config)?;
+
+    let mut failures = 0usize;
+    for namespace in &config.subscribes {
+        let result = (|| -> Result<()> {
+            validate_component("namespace", namespace)?;
+            let handler = config
+                .handlers
+                .get(namespace)
+                .ok_or_else(|| anyhow!("no handler configured for namespace: {namespace}"))?;
+            reconcile_with_handler(paths, namespace, Path::new(handler))
+        })();
+
+        if let Err(err) = result {
+            failures += 1;
+            eprintln!("proxmox-notify: reconcile failed for {namespace}: {err:#}");
+        }
+    }
+
+    if strict && failures > 0 {
+        bail!("{failures} reconcile handler(s) failed");
+    }
+    Ok(())
+}
+
+fn agent_poll_interval(paths: &Paths, override_interval: Option<&str>) -> Result<StdDuration> {
+    if let Some(value) = override_interval {
+        return parse_std_duration(value);
+    }
+
+    let config = read_optional_toml::<Config>(&paths.config)?.unwrap_or_default();
+    parse_std_duration(
+        config
+            .reconcile_interval
+            .as_deref()
+            .unwrap_or(DEFAULT_RECONCILE_INTERVAL),
+    )
+}
+
 fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -545,52 +629,7 @@ fn subscribe(paths: &Paths, namespace: &str, handler: &Path) -> Result<()> {
     if config.reconcile_interval.is_none() {
         config.reconcile_interval = Some(DEFAULT_RECONCILE_INTERVAL.to_string());
     }
-    write_toml_atomic(&paths.config, &config)?;
-
-    let interval = config
-        .reconcile_interval
-        .as_deref()
-        .unwrap_or(DEFAULT_RECONCILE_INTERVAL);
-    let instance = systemd_escape(namespace);
-    let dropin = PathBuf::from(format!(
-        "/etc/systemd/system/proxmox-notify-reconcile@{instance}.timer.d/override.conf"
-    ));
-    write_text_atomic(
-        &dropin,
-        &format!("[Timer]\nOnUnitActiveSec=\nOnUnitActiveSec={interval}\n"),
-    )?;
-
-    run_systemctl(["daemon-reload"])?;
-    run_systemctl([
-        "enable",
-        "--now",
-        &format!("proxmox-notify-watch@{instance}.path"),
-        &format!("proxmox-notify-reconcile@{instance}.timer"),
-    ])
-}
-
-fn systemd_escape(namespace: &str) -> String {
-    match ProcessCommand::new("systemd-escape")
-        .arg("--")
-        .arg(namespace)
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        }
-        _ => namespace.to_string(),
-    }
-}
-
-fn run_systemctl<const N: usize>(args: [&str; N]) -> Result<()> {
-    let status = ProcessCommand::new("systemctl")
-        .args(args)
-        .status()
-        .context("systemctl is required to enable subscriptions")?;
-    if !status.success() {
-        bail!("systemctl exited with {status}");
-    }
-    Ok(())
+    write_toml_atomic(&paths.config, &config)
 }
 
 fn prune_nodes(paths: &Paths, older_than: &str) -> Result<()> {
@@ -617,7 +656,7 @@ fn prune_nodes(paths: &Paths, older_than: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_duration(value: &str) -> Result<Duration> {
+fn parse_duration(value: &str) -> Result<ChronoDuration> {
     let trimmed = value.trim();
     let digit_count = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
     if digit_count == 0 {
@@ -627,12 +666,21 @@ fn parse_duration(value: &str) -> Result<Duration> {
     let amount: i64 = trimmed[..digit_count]
         .parse()
         .with_context(|| format!("invalid duration: {value}"))?;
+    if amount <= 0 {
+        bail!("duration must be positive: {value}");
+    }
     let unit = trimmed[digit_count..].trim();
     match unit {
-        "" | "s" => Ok(Duration::seconds(amount)),
-        "m" | "min" => Ok(Duration::minutes(amount)),
-        "h" => Ok(Duration::hours(amount)),
-        "d" => Ok(Duration::days(amount)),
+        "" | "s" => Ok(ChronoDuration::seconds(amount)),
+        "m" | "min" => Ok(ChronoDuration::minutes(amount)),
+        "h" => Ok(ChronoDuration::hours(amount)),
+        "d" => Ok(ChronoDuration::days(amount)),
         _ => bail!("invalid duration: {value}"),
     }
+}
+
+fn parse_std_duration(value: &str) -> Result<StdDuration> {
+    parse_duration(value)?
+        .to_std()
+        .with_context(|| format!("invalid duration: {value}"))
 }

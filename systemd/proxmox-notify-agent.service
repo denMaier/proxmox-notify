@@ -1,0 +1,13 @@
+[Unit]
+Description=proxmox-notify agent
+After=pve-cluster.service
+Requires=pve-cluster.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/proxmox-notify agent
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

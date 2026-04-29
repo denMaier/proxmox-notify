@@ -1,8 +1,0 @@
-[Unit]
-Description=Reconcile proxmox-notify namespace %I after watch event
-After=pve-cluster.service
-Requires=pve-cluster.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/proxmox-notify reconcile --namespace %I

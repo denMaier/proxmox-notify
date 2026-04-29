@@ -11,7 +11,7 @@ The model is intentionally narrow:
 - no-op announce/publish calls avoid touching pmxcfs
 - handlers reconcile current state, not individual events
 - per-namespace reconciles are single-flight with one coalesced rerun
-- periodic timers provide correctness when watch events are missed
+- one long-running agent polls subscriptions for correctness
 
 ## Documentation
 
@@ -39,8 +39,9 @@ subscribes = ["cluster-folder-git"]
 cluster-folder-git = "/usr/local/bin/cluster-folder-git-handler"
 ```
 
-`reconcile_interval` is used by `proxmox-notify subscribe` when it writes the
-systemd timer drop-in for a namespace. The packaged timer default is also 60s.
+`reconcile_interval` controls the polling interval used by
+`proxmox-notify agent`. Polling is the correctness path; filesystem watches are
+not required.
 
 ## Commands
 
@@ -52,6 +53,7 @@ proxmox-notify list-manifests --namespace cluster-folder-git
 proxmox-notify list-nodes
 proxmox-notify delete --namespace cluster-folder-git
 proxmox-notify reconcile --namespace cluster-folder-git
+proxmox-notify agent
 proxmox-notify subscribe --namespace cluster-folder-git --handler /usr/local/bin/handler
 proxmox-notify prune-nodes --older-than 30d
 ```
@@ -96,5 +98,5 @@ tests/installed-e2e.sh
 ```
 
 The real acceptance test is still a Proxmox cluster test: install on all nodes,
-publish and delete manifests, interrupt watch units, test a quorum loss, and
-confirm periodic reconcile converges.
+publish and delete manifests, stop/restart the agent, test a quorum loss, and
+confirm polling reconcile converges.

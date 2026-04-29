@@ -73,6 +73,10 @@ test "$manifest_before" = "$manifest_after"
 "$bin" reconcile --namespace demo
 grep -qx demo "$handler_log"
 
+>"$handler_log"
+"$bin" agent --once
+grep -qx demo "$handler_log"
+
 export PROXMOX_NOTIFY_NODE_NAME="pve-02"
 "$bin" announce
 "$bin" publish --namespace demo --payload-file "$payload"

@@ -21,11 +21,7 @@ build:
 install: build
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(SYSTEMD_DIR)" "$(DESTDIR)$(SYSCONFDIR)/proxmox-notify"
 	install -m755 "$(BINARY)" "$(DESTDIR)$(BINDIR)/proxmox-notify"
-	install -m644 systemd/proxmox-notify-announce.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-announce.service"
-	install -m644 systemd/proxmox-notify-watch@.path "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-watch@.path"
-	install -m644 systemd/proxmox-notify-watch@.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-watch@.service"
-	install -m644 systemd/proxmox-notify-reconcile@.timer "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-reconcile@.timer"
-	install -m644 systemd/proxmox-notify-reconcile@.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-reconcile@.service"
+	install -m644 systemd/proxmox-notify-agent.service "$(DESTDIR)$(SYSTEMD_DIR)/proxmox-notify-agent.service"
 	install -m644 config/config.toml "$(DESTDIR)$(SYSCONFDIR)/proxmox-notify/config.toml"
 
 package:

@@ -1,7 +1,7 @@
 # Node-local proxmox-notify configuration.
 #
-# `subscribe` preserves this value and writes a matching systemd timer drop-in
-# for new subscriptions. The shipped timer defaults to the same interval.
+# The agent polls at this interval. Polling is the correctness path; filesystem
+# watches should only ever be treated as optional latency hints.
 reconcile_interval = "60s"
 
 publishes = []

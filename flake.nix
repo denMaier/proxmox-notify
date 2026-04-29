@@ -33,19 +33,11 @@
           src = self;
 
           cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-
           postInstall = ''
             install -Dm644 config/config.toml "$out/etc/proxmox-notify/config.toml"
-            install -Dm644 systemd/proxmox-notify-announce.service "$out/lib/systemd/system/proxmox-notify-announce.service"
-            install -Dm644 systemd/proxmox-notify-watch@.path "$out/lib/systemd/system/proxmox-notify-watch@.path"
-            install -Dm644 systemd/proxmox-notify-watch@.service "$out/lib/systemd/system/proxmox-notify-watch@.service"
-            install -Dm644 systemd/proxmox-notify-reconcile@.timer "$out/lib/systemd/system/proxmox-notify-reconcile@.timer"
-            install -Dm644 systemd/proxmox-notify-reconcile@.service "$out/lib/systemd/system/proxmox-notify-reconcile@.service"
+            install -Dm644 systemd/proxmox-notify-agent.service "$out/lib/systemd/system/proxmox-notify-agent.service"
             substituteInPlace "$out"/lib/systemd/system/proxmox-notify-*.service \
               --replace-fail /usr/local/bin/proxmox-notify "$out/bin/proxmox-notify"
-            wrapProgram "$out/bin/proxmox-notify" \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.systemd ]}
           '';
 
           meta = {

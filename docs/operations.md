@@ -17,7 +17,7 @@ dpkg -i build/proxmox-notify_0.1.0_$(dpkg --print-architecture).deb
 The package installs:
 
 - `/usr/local/bin/proxmox-notify`
-- `/usr/local/lib/systemd/system/proxmox-notify-*.{service,path,timer}`
+- `/usr/local/lib/systemd/system/proxmox-notify-agent.service`
 - `/etc/proxmox-notify/config.toml`
 
 ## Configure
@@ -34,13 +34,13 @@ subscribes = ["cluster-folder-git"]
 cluster-folder-git = "/usr/local/bin/cluster-folder-git-handler"
 ```
 
-Then announce the node:
+Then enable the agent:
 
 ```sh
-systemctl enable --now proxmox-notify-announce.service
+systemctl enable --now proxmox-notify-agent.service
 ```
 
-Enable a subscription:
+Add a subscription from the CLI if you do not want to edit TOML directly:
 
 ```sh
 proxmox-notify subscribe \
@@ -48,7 +48,8 @@ proxmox-notify subscribe \
   --handler /usr/local/bin/cluster-folder-git-handler
 ```
 
-`subscribe` updates local config and enables the namespace path and timer units.
+`subscribe` only updates local config. The already-running agent reads config on
+each poll cycle and reconciles every namespace listed in `subscribes`.
 
 ## Publish
 
@@ -80,7 +81,7 @@ Before relying on it, test on a real three-node Proxmox cluster:
 1. Install the package on all nodes.
 2. Confirm every node writes an `announcements.toml`.
 3. Publish from node A and verify B/C observe the manifest.
-4. Stop a watch unit, publish, restart it, and confirm reconcile catches up.
+4. Stop an agent, publish, restart it, and confirm reconcile catches up.
 5. Test quorum loss: publish should fail cleanly on the minority side.
 6. Trigger rapid publishes and confirm handlers run at most twice per burst.
 7. Corrupt one manifest and confirm other manifests still list cleanly.
