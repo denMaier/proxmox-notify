@@ -70,7 +70,7 @@
             runHook preBuild
 
             PROXMOX_NOTIFY_BIN="${self.packages.${pkgs.system}.default}/bin/proxmox-notify" \
-              tests/smoke.sh
+              ${pkgs.bash}/bin/bash tests/smoke.sh
 
             runHook postBuild
           '';
