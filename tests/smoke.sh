@@ -27,11 +27,13 @@ handler="${tmp_dir}/bin/handler"
 sed -i.bak "s#__HANDLER__#${handler}#" "$PROXMOX_NOTIFY_CONFIG"
 rm -f -- "${PROXMOX_NOTIFY_CONFIG}.bak"
 
-cat >"$handler" <<'SH'
-#!/usr/bin/env bash
+{
+  printf '#!%s\n' "$(command -v bash)"
+  cat <<'SH'
 set -euo pipefail
 printf '%s\n' "$1" >>"${PROXMOX_NOTIFY_TEST_HANDLER_LOG}"
 SH
+} >"$handler"
 chmod +x "$handler"
 export PROXMOX_NOTIFY_TEST_HANDLER_LOG="${tmp_dir}/handler.log"
 

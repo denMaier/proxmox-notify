@@ -18,14 +18,16 @@ handler="${root}/handler.sh"
 handler_log="${root}/handler.log"
 payload="${root}/payload.toml"
 
-cat >"$handler" <<'SH'
-#!/usr/bin/env bash
+{
+  printf '#!%s\n' "$(command -v bash)"
+  cat <<'SH'
 set -euo pipefail
 printf '%s\n' "$1" >>"${PROXMOX_NOTIFY_E2E_HANDLER_LOG}"
 if [[ -n "${PROXMOX_NOTIFY_E2E_HANDLER_SLEEP:-}" ]]; then
   sleep "$PROXMOX_NOTIFY_E2E_HANDLER_SLEEP"
 fi
 SH
+} >"$handler"
 chmod +x "$handler"
 
 cat >"$PROXMOX_NOTIFY_CONFIG" <<TOML
