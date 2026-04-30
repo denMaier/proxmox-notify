@@ -160,6 +160,47 @@ impl Paths {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ClusterWriteStatus {
+    node: String,
+    writable: bool,
+    degraded_reason: Option<String>,
+}
+
+impl ClusterWriteStatus {
+    fn writable(node: String) -> Self {
+        Self {
+            node,
+            writable: true,
+            degraded_reason: None,
+        }
+    }
+
+    fn degraded(node: String, reason: impl Into<String>) -> Self {
+        Self {
+            node,
+            writable: false,
+            degraded_reason: Some(reason.into()),
+        }
+    }
+
+    fn degraded_env(&self) -> &'static str {
+        if self.writable {
+            "0"
+        } else {
+            "1"
+        }
+    }
+
+    fn writable_env(&self) -> &'static str {
+        if self.writable {
+            "1"
+        } else {
+            "0"
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -549,6 +590,101 @@ fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
     write_result
 }
 
+fn cluster_write_status(paths: &Paths) -> Result<ClusterWriteStatus> {
+    let node = node_name()?;
+    validate_component("node", &node)?;
+
+    if let Some(reason) = cluster_degraded_reason(&paths.cluster_root) {
+        Ok(ClusterWriteStatus::degraded(node, reason))
+    } else {
+        Ok(ClusterWriteStatus::writable(node))
+    }
+}
+
+fn cluster_degraded_reason(cluster_root: &Path) -> Option<String> {
+    match pmxcfs_quorate(cluster_root) {
+        Ok(Some(false)) => return Some("pmxcfs reports cluster is not quorate".to_string()),
+        Ok(Some(true) | None) => {}
+        Err(err) => return Some(format!("{err:#}")),
+    }
+
+    readonly_mount_reason(cluster_root)
+}
+
+fn pmxcfs_quorate(cluster_root: &Path) -> Result<Option<bool>> {
+    let Some(pve_root) = cluster_root.parent() else {
+        return Ok(None);
+    };
+    let members_path = pve_root.join(".members");
+    let members = match fs::read_to_string(&members_path) {
+        Ok(members) => members,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("cannot read {}", members_path.display()))
+        }
+    };
+    let value: serde_json::Value = serde_json::from_str(&members)
+        .with_context(|| format!("invalid JSON in {}", members_path.display()))?;
+    Ok(value
+        .get("quorate")
+        .and_then(|value| value.as_i64())
+        .map(|quorate| quorate != 0))
+}
+
+#[cfg(target_os = "linux")]
+fn readonly_mount_reason(path: &Path) -> Option<String> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mount = mountinfo
+        .lines()
+        .filter_map(parse_mountinfo_line)
+        .filter(|mount| path.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.as_os_str().len())?;
+
+    if mount.readonly {
+        Some(format!(
+            "{} is mounted read-only",
+            mount.mount_point.display()
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn readonly_mount_reason(_path: &Path) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+struct MountInfo {
+    mount_point: PathBuf,
+    readonly: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn parse_mountinfo_line(line: &str) -> Option<MountInfo> {
+    let (before_separator, _) = line.split_once(" - ")?;
+    let fields: Vec<&str> = before_separator.split_whitespace().collect();
+    if fields.len() < 6 {
+        return None;
+    }
+
+    Some(MountInfo {
+        mount_point: PathBuf::from(unescape_mountinfo_path(fields[4])),
+        readonly: fields[5].split(',').any(|option| option == "ro"),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn unescape_mountinfo_path(value: &str) -> String {
+    value
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+}
+
 fn announce(paths: &Paths) -> Result<()> {
     let config = read_config(&paths.config)?;
     announce_with_config(paths, &config)
@@ -747,10 +883,16 @@ fn reconcile(paths: &Paths, namespace: &str) -> Result<()> {
         .get(namespace)
         .ok_or_else(|| anyhow!("no handler configured for namespace: {namespace}"))?;
     let handler_path = Path::new(handler);
-    reconcile_with_handler(paths, namespace, handler_path)
+    let cluster_status = cluster_write_status(paths)?;
+    reconcile_with_handler(paths, namespace, handler_path, &cluster_status)
 }
 
-fn reconcile_with_handler(paths: &Paths, namespace: &str, handler_path: &Path) -> Result<()> {
+fn reconcile_with_handler(
+    paths: &Paths,
+    namespace: &str,
+    handler_path: &Path,
+    cluster_status: &ClusterWriteStatus,
+) -> Result<()> {
     if !is_executable(handler_path) {
         bail!("handler is not executable: {}", handler_path.display());
     }
@@ -781,11 +923,11 @@ fn reconcile_with_handler(paths: &Paths, namespace: &str, handler_path: &Path) -
 
     let result = {
         let _ = fs::remove_file(&rerun_path);
-        let mut exit = run_handler(handler_path, namespace);
+        let mut exit = run_handler(handler_path, namespace, cluster_status);
 
         if rerun_path.exists() {
             let _ = fs::remove_file(&rerun_path);
-            let second_exit = run_handler(handler_path, namespace);
+            let second_exit = run_handler(handler_path, namespace, cluster_status);
             if second_exit.is_err() {
                 exit = second_exit;
             }
@@ -825,9 +967,19 @@ fn agent_cycle(paths: &Paths, strict: bool) -> Result<()> {
     let config = read_config(&paths.config)?;
 
     let mut failures = 0usize;
-    if let Err(err) = announce_with_config(paths, &config) {
+    let mut cluster_status = cluster_write_status(paths)?;
+    if !cluster_status.writable {
+        failures += 1;
+        let reason = cluster_status
+            .degraded_reason
+            .as_deref()
+            .unwrap_or("cluster state is not writable");
+        eprintln!("proxmox-notify: cluster state degraded: {reason}");
+    } else if let Err(err) = announce_with_config(paths, &config) {
         failures += 1;
         eprintln!("proxmox-notify: announce failed: {err:#}");
+        cluster_status =
+            ClusterWriteStatus::degraded(cluster_status.node.clone(), format!("{err:#}"));
     }
 
     for namespace in &config.subscribes {
@@ -837,7 +989,7 @@ fn agent_cycle(paths: &Paths, strict: bool) -> Result<()> {
                 .handlers
                 .get(namespace)
                 .ok_or_else(|| anyhow!("no handler configured for namespace: {namespace}"))?;
-            reconcile_with_handler(paths, namespace, Path::new(handler))
+            reconcile_with_handler(paths, namespace, Path::new(handler), &cluster_status)
         })();
 
         if let Err(err) = result {
@@ -882,9 +1034,20 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-fn run_handler(handler: &Path, namespace: &str) -> Result<()> {
+fn run_handler(handler: &Path, namespace: &str, cluster_status: &ClusterWriteStatus) -> Result<()> {
     let status = ProcessCommand::new(handler)
         .arg(namespace)
+        .env("PROXMOX_NOTIFY_NAMESPACE", namespace)
+        .env("PROXMOX_NOTIFY_NODE", &cluster_status.node)
+        .env(
+            "PROXMOX_NOTIFY_CLUSTER_WRITABLE",
+            cluster_status.writable_env(),
+        )
+        .env("PROXMOX_NOTIFY_DEGRADED", cluster_status.degraded_env())
+        .env(
+            "PROXMOX_NOTIFY_DEGRADED_REASON",
+            cluster_status.degraded_reason.as_deref().unwrap_or(""),
+        )
         .status()
         .with_context(|| format!("cannot run handler {}", handler.display()))?;
     if !status.success() {

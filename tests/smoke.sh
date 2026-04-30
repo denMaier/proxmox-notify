@@ -28,9 +28,13 @@ rm -f -- "${PROXMOX_NOTIFY_CONFIG}.bak"
 
 {
   printf '#!%s\n' "$(command -v bash)"
-  cat <<'SH'
+cat <<'SH'
 set -euo pipefail
-printf '%s\n' "$1" >>"${PROXMOX_NOTIFY_TEST_HANDLER_LOG}"
+printf '%s %s %s\n' \
+  "$1" \
+  "${PROXMOX_NOTIFY_DEGRADED}" \
+  "${PROXMOX_NOTIFY_CLUSTER_WRITABLE}" \
+  >>"${PROXMOX_NOTIFY_TEST_HANDLER_LOG}"
 SH
 } >"$handler"
 chmod +x "$handler"
@@ -64,11 +68,17 @@ test "$manifest_before" = "$manifest_after"
 "$bin" list-nodes | python3 -m json.tool >/dev/null
 
 "$bin" reconcile --namespace demo
-grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+grep -qx 'demo 0 1' "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
 
 >"$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
 "$bin" agent --once
-grep -qx demo "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+grep -qx 'demo 0 1' "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+
+printf '{"quorate":0}\n' >"${tmp_dir}/pve/.members"
+>"$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+"$bin" reconcile --namespace demo
+grep -qx 'demo 1 0' "$PROXMOX_NOTIFY_TEST_HANDLER_LOG"
+rm -f -- "${tmp_dir}/pve/.members"
 
 install_root="${tmp_dir}/install-root"
 "$bin" install --destdir "$install_root" --prefix /usr/local --sysconfdir /etc --no-systemctl

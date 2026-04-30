@@ -66,8 +66,8 @@ and uninstall paths for the agent unit.
 For a release, tag the commit:
 
 ```sh
-git tag v0.1.0
-git push origin main v0.1.0
+git tag v0.1.1
+git push origin main v0.1.1
 ```
 
 The tag build uses the tag name as the binary artifact version and publishes the

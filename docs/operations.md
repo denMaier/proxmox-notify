@@ -101,6 +101,7 @@ Before relying on it, test on a real three-node Proxmox cluster:
 2. Confirm every node writes an `announcements.toml`.
 3. Publish from node A and verify B/C observe the manifest.
 4. Stop an agent, publish, restart it, and confirm reconcile catches up.
-5. Test quorum loss: publish should fail cleanly on the minority side.
+5. Test quorum loss: publish should fail cleanly on the minority side, and
+   handlers should see `PROXMOX_NOTIFY_DEGRADED=1`.
 6. Trigger rapid publishes and confirm handlers run at most twice per burst.
 7. Corrupt one manifest and confirm other manifests still list cleanly.

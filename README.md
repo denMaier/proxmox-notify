@@ -10,6 +10,7 @@ The model is intentionally narrow:
 - writes are atomic `*.tmp` writes followed by rename
 - no-op announce/publish calls avoid touching pmxcfs
 - handlers reconcile current state, not individual events
+- handlers receive environment that exposes local degraded/minority state
 - per-namespace reconciles are single-flight with one coalesced rerun
 - one long-running agent polls subscriptions for correctness
 

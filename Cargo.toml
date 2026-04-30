@@ -1,6 +1,6 @@
 [package]
 name = "proxmox-notify"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "pmxcfs-backed node-to-node state announcements for Proxmox"
 

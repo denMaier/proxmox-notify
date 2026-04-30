@@ -26,6 +26,8 @@ The implementation keeps pmxcfs writes narrow:
 - `delete` does nothing when the manifest is already absent.
 - `agent`, `reconcile`, `get`, `list-nodes`, and `list-manifests` do not write
   pmxcfs except for `agent` calling the no-op-aware announce path.
+- `agent` and `reconcile` detect degraded/minority state without probe writes by
+  reading pmxcfs cluster metadata and mount state.
 
 Timestamps are metadata for changed writes; they do not force no-op updates.
 
@@ -75,6 +77,21 @@ Handlers should read current cluster state with:
 ```sh
 proxmox-notify list-manifests --namespace <namespace>
 ```
+
+Handlers also receive environment describing the local node's view of cluster
+state:
+
+```text
+PROXMOX_NOTIFY_NAMESPACE=<namespace>
+PROXMOX_NOTIFY_NODE=<local node>
+PROXMOX_NOTIFY_CLUSTER_WRITABLE=1|0
+PROXMOX_NOTIFY_DEGRADED=0|1
+PROXMOX_NOTIFY_DEGRADED_REASON=<error text, empty when writable>
+```
+
+When quorum is lost and pmxcfs is read-only, handlers should treat
+`PROXMOX_NOTIFY_DEGRADED=1` as a local degraded-state signal. They should not
+try to publish replacement cluster truth from the minority side.
 
 Handlers must be idempotent. They should no-op quickly when local state already
 matches peer manifests.

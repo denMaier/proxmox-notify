@@ -48,7 +48,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="0.1.0+${GITHUB_SHA::7}"
+            version="0.1.1+${GITHUB_SHA::7}"
           fi
           arch="$(uname -m)"
           echo "VERSION=${version}" >>"${GITHUB_ENV}"
