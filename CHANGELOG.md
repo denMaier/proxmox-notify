@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/denMaier/proxmox-notify/compare/v0.1.2...v0.1.3) (2026-11-24)
+
+
+### Bug Fixes
+
+* **deps:** bump clap from 4.6.1 to 4.6.9 ([#10](https://github.com/denMaier/proxmox-notify/issues/10)) ([7f805ff](https://github.com/denMaier/proxmox-notify/commit/7f805ffb5936f35a4ff7d456d3d776534124ba25))
+
 ## [0.1.2](https://github.com/denMaier/proxmox-notify/compare/v0.1.1...v0.1.2) (2026-11-24)
 
 

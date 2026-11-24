@@ -7,7 +7,7 @@ INSTALL_BINARY ?= 1
 INSTALL_CONFIG ?= 1
 INSTALL_SYSTEMD_UNIT ?= 1
 # x-release-please-start-version
-VERSION ?= 0.1.2
+VERSION ?= 0.1.3
 # x-release-please-end
 PACKAGE_ARCH ?= $(shell uname -m)
 PACKAGE_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
