@@ -63,12 +63,14 @@ The optional Debian package remains available through `make deb`. It stages the
 binary and config, then uses maintainer scripts to call the CLI-managed install
 and uninstall paths for the agent unit.
 
-For a release, tag the commit:
+Releases are made by release-please. Pull request titles follow Conventional
+Commits (`fix:` is a patch, `feat:` a minor version, a breaking change a minor
+version while below 1.0), and squash merges turn them into the commit history.
+release-please keeps a release pull request open with the next version and
+changelog, and updates the version in `Cargo.toml`, `Cargo.lock`, `Makefile`,
+`flake.nix`, `scripts/build-deb` and the workflow. Merging it tags the release,
+and `package.yml` builds, tests and attaches the binary before publishing the
+release. A release made only of dependency fixes merges on its own.
 
-```sh
-git tag v0.1.1
-git push origin main v0.1.1
-```
-
-The tag build uses the tag name as the binary artifact version and publishes the
-binary to the matching GitHub Release with `gh`.
+To choose a version yourself, add a `Release-As: 0.2.0` line to a commit
+message body.

@@ -6,7 +6,9 @@ BUILD_PROFILE ?= release
 INSTALL_BINARY ?= 1
 INSTALL_CONFIG ?= 1
 INSTALL_SYSTEMD_UNIT ?= 1
+# x-release-please-start-version
 VERSION ?= 0.1.1
+# x-release-please-end
 PACKAGE_ARCH ?= $(shell uname -m)
 PACKAGE_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 PACKAGE_PATH ?= build/proxmox-notify_$(VERSION)_$(PACKAGE_ARCH)-$(PACKAGE_OS)

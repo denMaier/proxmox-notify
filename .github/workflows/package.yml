@@ -4,10 +4,14 @@ on:
   push:
     branches:
       - "**"
-    tags:
-      - "v*"
   pull_request:
   workflow_dispatch:
+  # release.yml calls this with the tag release-please just created.
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -26,6 +30,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || '' }}
 
       - name: Install build dependencies
         run: |
@@ -43,12 +49,14 @@ jobs:
         run: make ci
 
       - name: Set artifact version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v?[0-9] ]]; then
-            version="${GITHUB_REF_NAME#v}"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            version="${RELEASE_TAG#v}"
           else
-            version="0.1.1+${GITHUB_SHA::7}"
+            version="0.1.1+${GITHUB_SHA::7}" # x-release-please-version
           fi
           arch="$(uname -m)"
           echo "VERSION=${version}" >>"${GITHUB_ENV}"
@@ -80,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - linux-binary
-    if: github.ref_type == 'tag'
+    if: inputs.tag != ''
     permissions:
       contents: write
 
@@ -94,7 +102,7 @@ jobs:
       - name: Publish release asset
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           mapfile -t assets < <(find dist -type f -name 'proxmox-notify_*' -print | sort)
@@ -111,6 +119,9 @@ jobs:
               --title "${TAG}" \
               --notes "Linux binary for proxmox-notify ${TAG}. Make the downloaded asset executable, then run it as root with: ./<asset> install --enable-now"
           fi
+          # release-please creates the release as a draft; publish it now that
+          # the binary is attached.
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
 
   nix:
     name: Check Nix flake
