@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/denMaier/proxmox-notify/compare/v0.1.3...v0.1.4) (2026-11-24)
+
+
+### Bug Fixes
+
+* **deps:** bump toml from 0.8.23 to 1.2.2+spec-1.1.0 ([#9](https://github.com/denMaier/proxmox-notify/issues/9)) ([071c624](https://github.com/denMaier/proxmox-notify/commit/071c624a30045a0ee8673103f6cc24b45b9315c9))
+
 ## [0.1.3](https://github.com/denMaier/proxmox-notify/compare/v0.1.2...v0.1.3) (2026-11-24)
 
 
